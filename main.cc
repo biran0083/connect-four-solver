@@ -1,4 +1,5 @@
 #include<array>
+#include<unistd.h>
 #include<memory>
 #include<fstream>
 #include<unordered_map>
@@ -9,7 +10,6 @@
 #include<vector>
 #include<algorithm>
 #include<iostream>
-constexpr int TABLE_THRESH_MOVES = 8;
 constexpr int HEIGHT = 6;
 constexpr int WIDTH = 7;
 constexpr int MAX_SCORE = (WIDTH*HEIGHT+1)/2 - 3;
@@ -410,32 +410,33 @@ class Agent {
 public:
   virtual ~Agent() = default;
   virtual int get_move(BitBoard& b) = 0;
-  virtual std::string name() = 0;
+  virtual std::string getName() = 0;
 };
 
 class HumanAgent: public Agent {
 public:
   virtual int get_move(BitBoard& b) override {
-    std::cout << name() << "> ";
+    std::cout << getName() << "> ";
     int move;
     std::cin >> move;
     return move;
   }
 
-  virtual std::string name() override {
+  virtual std::string getName() override {
     return "Human";
   }
 };
 
 class AI :public Agent{
 public:
-  AI(Solver& solver): Agent(), solver(solver) {}
+  AI(Solver& solver, const std::string& name="AI"): Agent(), solver(solver), name(name) {}
 
   virtual int get_move(BitBoard& b) override {
+    std::cout <<  getName() << "> " << std::flush;
     auto moveScores = get_move_scores(b);
     int res;
     if (moveScores.size() == 0) {
-      std::cout << name() << ": all moves are losing. Making random move" << std::endl;
+      std::cout << ": all moves are losing." << std::endl;
       // return first legal move when losing
       auto moves = b.get_legal_moves();
       for (int i = 0; i < WIDTH; i++) {
@@ -447,7 +448,6 @@ public:
     } else {
       res = -1;
       int max = MIN_SCORE - 1;
-      std::cout <<  name() << "> ";
       for (auto [move, score] : moveScores) {
         if(score > max) {
           max = score;
@@ -457,12 +457,12 @@ public:
       }
     }
     std::cout << std::endl;
-    std::cout <<  name() << "> " << res << std::endl;
+    std::cout <<  getName() << "> " << res << std::endl;
     return res;
   }
 
-  virtual std::string name() override {
-    return "AI";
+  virtual std::string getName() override {
+    return name;
   }
 
 private:
@@ -477,6 +477,7 @@ private:
     return res;
   }
   Solver& solver;
+  std::string name;
 };
 
 void printHelpAndExit() {
@@ -533,25 +534,33 @@ Args parseArgs(int argc, char** argv) {
   return args;
 }
 
+void clearScreen() {
+  std::cout << "\033[2J\033[1;1H";
+}
+
 class GameRunner {
 public:
   void play(std::array<std::unique_ptr<Agent>, 2>& agents) {
     BitBoard b;
     int move;
     int turn = 0;
-    while (1) {
+    while (1) { 
+      clearScreen();
       b.print();
       int move = agents[turn]->get_move(b);
       if (b.is_winning_move(move)) {
+        clearScreen();
         b.make_move(move).print();
-        std::cout << agents[turn]->name() << " wins" << std::endl;
+        std::cout << agents[turn]->getName() << " wins" << std::endl;
         break;
       }
       b = b.make_move(move);
       turn = 1 - turn;
+      sleep(1);
     }
   }
 };
+
 
 int main(int argc, char** argv) {
   Args args = parseArgs(argc, argv);
@@ -589,8 +598,8 @@ int main(int argc, char** argv) {
     BitBoard b;
     int move;
     std::array<std::unique_ptr<Agent>, 2> agents = {
-      std::make_unique<HumanAgent>(),
-      std::make_unique<AI>(solver)
+      std::make_unique<AI>(solver, "player-X"),
+      std::make_unique<AI>(solver, "player-O")
     };
     GameRunner().play(agents);
   } else {
