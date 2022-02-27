@@ -184,6 +184,10 @@ class BitBoard {
 public:
   BitBoard(int64_t pos = 0, int64_t mask = 0, int moves = 0):pos(pos), mask(mask), moves(moves) {}
 
+  char get_next_move_type() {
+    return moves % 2 == 0 ? 'X' : 'O';
+  }
+
   // seq: sequence of chars, each char is a move.
   // '1' -> col 0
   // '2' -> col 1
@@ -267,7 +271,7 @@ public:
     }
 
     for (int j = 0; j < WIDTH; j++) {
-      std::cout << " " << j;
+      std::cout << " " << j + 1;
     }
     std::cout << std::endl;
   }
@@ -345,7 +349,7 @@ public:
 
   int solve(BitBoard b) {
     if (b.canWinWithOneMove()) {
-      return 1;
+      return (WIDTH * HEIGHT - b.moves + 1) / 2;
     }
     int min = -(WIDTH * HEIGHT - b.moves) / 2;
     int max = (WIDTH * HEIGHT + 1 - b.moves) / 2;
@@ -413,13 +417,13 @@ public:
   virtual std::string getName() = 0;
 };
 
-class HumanAgent: public Agent {
+class Human: public Agent {
 public:
   virtual int get_move(BitBoard& b) override {
     std::cout << getName() << "> ";
     int move;
     std::cin >> move;
-    return move;
+    return move - 1;
   }
 
   virtual std::string getName() override {
@@ -432,32 +436,42 @@ public:
   AI(Solver& solver, const std::string& name="AI"): Agent(), solver(solver), name(name) {}
 
   virtual int get_move(BitBoard& b) override {
-    std::cout <<  getName() << "> " << std::flush;
-    auto moveScores = get_move_scores(b);
+    int64_t winning_moves = get_winning_moves(b.pos, b.mask) & b.get_legal_moves();
     int res;
-    if (moveScores.size() == 0) {
-      std::cout << ": all moves are losing." << std::endl;
-      // return first legal move when losing
-      auto moves = b.get_legal_moves();
+    if (winning_moves) {
       for (int i = 0; i < WIDTH; i++) {
-        if (get_column_mask(i) & moves) {
+        if (get_column_mask(i) & winning_moves) {
           res = i;
           break;
         }
       }
     } else {
-      res = -1;
-      int max = MIN_SCORE - 1;
-      for (auto [move, score] : moveScores) {
-        if(score > max) {
-          max = score;
-          res = move;
+      auto moveScores = get_move_scores(b);
+      if (moveScores.size() == 0) {
+        std::cout << std::endl;
+        // return first legal move when losing
+        auto moves = b.get_legal_moves();
+        for (int i = 0; i < WIDTH; i++) {
+          if (get_column_mask(i) & moves) {
+            res = i;
+            break;
+          }
         }
-        std::cout <<  move << ":" << score << " ";
+      } else {
+        std::cout << getName() << "> " << std::flush;
+        res = -1;
+        int max = MIN_SCORE - 1;
+        for (auto [move, score] : moveScores) {
+          if(score > max) {
+            max = score;
+            res = move;
+          }
+          std::cout << move + 1 << ":" << score << " ";
+        }
+        std::cout << std::endl;
       }
     }
-    std::cout << std::endl;
-    std::cout <<  getName() << "> " << res << std::endl;
+    std::cout << getName() << "> " << res << std::endl;
     return res;
   }
 
@@ -476,6 +490,7 @@ private:
     }
     return res;
   }
+
   Solver& solver;
   std::string name;
 };
@@ -487,7 +502,9 @@ void printHelpAndExit() {
     << " ./main play # play with solver with text UI" << std::endl
     << " Optional flags:"<< std::endl
     << "  -l <score-table-file>  # load score table" << std::endl
-    << "  -t <pin-score-depth-thresh> pin score into cache if depth <= this threshold" << std::endl;
+    << "  -t <pin-score-depth-thresh> pin score into cache if depth <= this threshold" << std::endl
+    << "  -a1 [ai|human] agent 1 when playing, default: human" << std::endl
+    << "  -a2 [ai|human] agent 2 when playing, default: ai" << std::endl;
   exit(-1);
 }
 
@@ -498,6 +515,8 @@ struct Args {
   std::string scoreTableFile;
   int pinScoreDepthThreshold = -1;
   bool weakSolver = false;
+  std::string agent1 = "human";
+  std::string agent2 = "ai";
 };
 
 Args parseArgs(int argc, char** argv) {
@@ -520,6 +539,15 @@ Args parseArgs(int argc, char** argv) {
           case 't':
             args.pinScoreDepthThreshold = std::atoi(argv[++i]);
             break;
+          case 'a':
+            if (s[2] == '1') {
+              args.agent1 = argv[++i];
+            } else if (s[2] == '2') {
+              args.agent2 = argv[++i];
+            } else {
+              printHelpAndExit();
+            }
+            break;
           default:
             printHelpAndExit();
             break;
@@ -540,27 +568,37 @@ void clearScreen() {
 
 class GameRunner {
 public:
-  void play(std::array<std::unique_ptr<Agent>, 2>& agents) {
-    BitBoard b;
+  void play(BitBoard& b, std::array<std::unique_ptr<Agent>, 2>& agents) {
     int move;
     int turn = 0;
     while (1) { 
       clearScreen();
       b.print();
+      std::cout << b.get_next_move_type() << " playing" << std::endl;
       int move = agents[turn]->get_move(b);
       if (b.is_winning_move(move)) {
         clearScreen();
         b.make_move(move).print();
-        std::cout << agents[turn]->getName() << " wins" << std::endl;
+        std::cout << agents[turn]->getName() << " " << b.get_next_move_type() << " wins" << std::endl;
         break;
       }
       b = b.make_move(move);
       turn = 1 - turn;
       sleep(1);
+      if (b.moves == HEIGHT * WIDTH) {
+        std::cout << "draw" << std::endl;
+        break;
+      }
     }
   }
 };
 
+std::unique_ptr<Agent> makeAgent(Solver& solver, const std::string& name) {
+  if (name == "human") {
+    return std::make_unique<Human>();
+  }
+  return std::make_unique<AI>(solver, "ai");
+}
 
 int main(int argc, char** argv) {
   Args args = parseArgs(argc, argv);
@@ -577,6 +615,7 @@ int main(int argc, char** argv) {
     std::chrono::duration<double> totalDuration = std::chrono::duration<double>::zero();
     while (std::cin >> s >> score) {
       BitBoard b(s);
+      b.print();
       solver.reset();
       auto st = std::chrono::high_resolution_clock::now();
       int v = solver.solve(b);
@@ -595,15 +634,15 @@ int main(int argc, char** argv) {
     Searcher searcher(solver, args.depth);
     searcher.search(b);
   } else if (args.cmd == "play") {
-    BitBoard b;
     int move;
+    BitBoard b(args.startingMoves);
     std::array<std::unique_ptr<Agent>, 2> agents = {
-      std::make_unique<AI>(solver, "player-X"),
-      std::make_unique<AI>(solver, "player-O")
+      makeAgent(solver, args.agent1),
+      makeAgent(solver, args.agent2),
     };
-    GameRunner().play(agents);
+    GameRunner().play(b, agents);
   } else {
     printHelpAndExit();
   }
-	return 0;
+  return 0;
 }
