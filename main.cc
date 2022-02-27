@@ -48,18 +48,18 @@ constexpr int64_t FULL = full_mask();
 class Table {
 public:
 
-  Table(size_t size): k(size), l(size), h(size) {
+  Table(size_t size, int pinThresh): k(size), l(size), h(size), pinThresh(pinThresh) {
     clear();
   }
 
-  Table(): Table((1 << 23) + 9) {}
+  Table(int pinThresh): Table((1 << 23) + 9, pinThresh) {}
 
   void clear() {
     memset(k.data(), 0, k.size() * sizeof(int32_t));
   }
 
   void put(int64_t key, int8_t low, int8_t hi, int depth) {
-    if (depth <= TABLE_THRESH_MOVES) {
+    if (depth <= pinThresh) {
       full_cache[key] = std::make_pair(low, hi);
     } else {
       size_t idx = key % k.size();
@@ -70,7 +70,7 @@ public:
   }
 
   std::pair<int, int> get(int64_t key, int depth) {
-    if (depth <= TABLE_THRESH_MOVES) {
+    if (depth <= pinThresh) {
       auto it = full_cache.find(key);
       if (it != full_cache.end()) {
         return it->second;
@@ -84,29 +84,19 @@ public:
     return {MIN_SCORE,MAX_SCORE};
   }
 
-  void load(std::string fname) {
+  void load(const std::string& fname) {
     std::ifstream f(fname, std::ifstream::in);
     int64_t key;
     int score;
     while (f >> key >> score) {
       put(key, score, score, 0);
-      mark_printed(key);
       key = mirrow(key);
       put(key, score, score, 0);
-      mark_printed(key);
     }
     std::cerr << fname << " loaded" << std::endl;
   }
-
-  void mark_printed(int64_t key) {
-    printed.insert(key);
-  }
-
-  bool is_printed(int64_t key) {
-    return printed.find(key) != printed.end();
-  }
 private:
-  std::unordered_set<int64_t> printed;
+  const int pinThresh;
   std::unordered_map<int64_t, std::pair<int,int>> full_cache;
   std::vector<int32_t> k;
   std::vector<int8_t> l;
@@ -193,6 +183,19 @@ int count_winning_moves(int64_t pos, int64_t mask) {
 class BitBoard {
 public:
   BitBoard(int64_t pos = 0, int64_t mask = 0, int moves = 0):pos(pos), mask(mask), moves(moves) {}
+
+  // seq: sequence of chars, each char is a move.
+  // '1' -> col 0
+  // '2' -> col 1
+  // .etc
+  BitBoard(const std::string& seq): pos(0), mask(0), moves(0) {
+    for (int i = 0; i < seq.length(); i++) {
+      int col = seq[i] - '1';
+      pos ^= mask;
+      mask |= mask + get_bottom_mask(col);
+      moves++;
+    }
+  }
 
   int64_t key() {
     return pos + mask;
@@ -282,7 +285,6 @@ public:
     nodeCount = 0;
   }
 
-
   int negamax(BitBoard a, int alpha, int beta) {
     nodeCount++;
     int64_t moves = a.get_non_losing_moves();
@@ -362,22 +364,46 @@ public:
   Table& table;
 };
 
-void dfs(Solver& solver, BitBoard b, int depth) {
-  if (depth > TABLE_THRESH_MOVES) {
-    return;
-  }
-  auto key = b.key();
-  if (!solver.table.is_printed(key)){
-    std::cout << key << " " << solver.solve(b) << std::endl;
-    solver.table.mark_printed(key);
-  }
-  auto moves = b.get_non_losing_moves();
-  for (int i = 0; i < WIDTH; i++) {
-    if (moves & get_column_mask(i)) {
-      dfs(solver, b.make_move(i), depth + 1);
+class Searcher {
+public:
+  Searcher(Solver& solver, int depth): solver(solver), depth(depth) {}
+
+  void search(BitBoard b) {
+    if (b.moves <= depth) {
+      dfs(b);
     }
   }
-}
+
+private:
+  void dfs(BitBoard b) {
+    auto key = b.key();
+    if (!is_printed(key)){
+      std::cout << key << " " << solver.solve(b) << std::endl;
+      mark_printed(key);
+    }
+    if (b.moves >= depth) {
+      return;
+    }
+    auto moves = b.get_non_losing_moves();
+    for (int i = 0; i < WIDTH; i++) {
+      if (moves & get_column_mask(i)) {
+        dfs(b.make_move(i));
+      }
+    }
+  }
+
+  void mark_printed(int64_t key) {
+    printed.insert(key);
+  }
+
+  bool is_printed(int64_t key) {
+    return printed.find(key) != printed.end();
+  }
+
+  std::unordered_set<int64_t> printed;
+  Solver& solver;
+  const int depth;
+};
 
 
 class Agent {
@@ -453,62 +479,122 @@ private:
   Solver& solver;
 };
 
-int main(int argc, char** argv) {
-  Table table;
-  table.load("table");
-  Solver solver(table);
-  /*
-  BitBoard b;
-  int n = 0;
+void printHelpAndExit() {
+  std::cout 
+    << " ./main solve  # solve game states, take input from stdin." << std::endl
+    << " ./main search [-s <starting-moves>] [-d <depth>] # compute and print score table up to given depth (default 8)" << std::endl
+    << " ./main play # play with solver with text UI" << std::endl
+    << " Optional flags:"<< std::endl
+    << "  -l <score-table-file>  # load score table" << std::endl
+    << "  -t <pin-score-depth-thresh> pin score into cache if depth <= this threshold" << std::endl;
+  exit(-1);
+}
+
+struct Args {
+  std::string cmd;
+  std::string startingMoves;
+  int depth = 8;
+  std::string scoreTableFile;
+  int pinScoreDepthThreshold = -1;
+  bool weakSolver = false;
+};
+
+Args parseArgs(int argc, char** argv) {
+  Args args;
   if (argc > 1) {
-    for (char* s = argv[1]; *s; s++) {
-      b = b.make_move(*s - '0' - 1);
-      n++;
+    args.cmd = argv[1];
+    for (int i = 2; i < argc; i++) {
+      char* s = argv[i];
+      if (s[0] == '-') {
+        switch (s[1]) {
+          case 's':
+            args.startingMoves = argv[++i];
+            break;
+          case 'd':
+            args.depth = std::atoi(argv[++i]);
+            break;
+          case 'l':
+            args.scoreTableFile = argv[++i];
+            break;
+          case 't':
+            args.pinScoreDepthThreshold = std::atoi(argv[++i]);
+            break;
+          default:
+            printHelpAndExit();
+            break;
+        }
+      } else {
+        printHelpAndExit();
+      }
     }
+  } else {
+    printHelpAndExit();
   }
-  dfs(solver, b, n);
-  */
-  /*
-  std::string s;
-  int score;
-  int testId = 1;
-  auto start = std::chrono::high_resolution_clock::now();
-  std::chrono::duration<double> totalDuration = std::chrono::duration<double>::zero();
-  while (std::cin >> s >> score) {
+  return args;
+}
+
+class GameRunner {
+public:
+  void play(std::array<std::unique_ptr<Agent>, 2>& agents) {
     BitBoard b;
-    for (int i = 0; i < s.length(); i++) {
-      b = b.make_move(s[i] - '0' - 1);
-    }
-    solver.reset();
-    auto st = std::chrono::high_resolution_clock::now();
-    int v = solver.solve(b);
-    std::chrono::duration<double> duration = std::chrono::high_resolution_clock::now() - st;
-    totalDuration += duration;
-    if (score ==  v) {
-      std::cout << "test " << testId++ <<  " pass " << duration.count() << "s node_count " << solver.nodeCount << std::endl;
-    } else {
-      std::cout << "test " << testId++ <<  " fail: " <<  v  << "!=" << score << std::endl;
-      break;
+    int move;
+    int turn = 0;
+    while (1) {
+      b.print();
+      int move = agents[turn]->get_move(b);
+      if (b.is_winning_move(move)) {
+        b.make_move(move).print();
+        std::cout << agents[turn]->name() << " wins" << std::endl;
+        break;
+      }
+      b = b.make_move(move);
+      turn = 1 - turn;
     }
   }
-  std::cout << "total duration: " << totalDuration.count() << "s" << std::endl;
-  */
-  BitBoard b;
-  int move;
-  std::vector<std::unique_ptr<Agent>> agents;
-  agents.emplace_back(std::make_unique<HumanAgent>());
-  agents.emplace_back(std::make_unique<AI>(solver));
-  int turn = 0;
-  while (1) {
-    b.print();
-    int move = agents[turn]->get_move(b);
-    if (b.is_winning_move(move)) {
-      b.make_move(move).print();
-      std::cout << agents[turn]->name() << " wins" << std::endl;
-      break;
+};
+
+int main(int argc, char** argv) {
+  Args args = parseArgs(argc, argv);
+  Table table(args.pinScoreDepthThreshold);
+  if (args.scoreTableFile.size()) {
+    table.load(args.scoreTableFile);
+  }
+  Solver solver(table);
+  if (args.cmd == "solve") {
+    std::string s;
+    int score;
+    int testId = 1;
+    auto start = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> totalDuration = std::chrono::duration<double>::zero();
+    while (std::cin >> s >> score) {
+      BitBoard b(s);
+      solver.reset();
+      auto st = std::chrono::high_resolution_clock::now();
+      int v = solver.solve(b);
+      std::chrono::duration<double> duration = std::chrono::high_resolution_clock::now() - st;
+      totalDuration += duration;
+      if (score ==  v) {
+        std::cout << "test " << testId++ <<  " pass " << duration.count() << "s node_count " << solver.nodeCount << std::endl;
+      } else {
+        std::cout << "test " << testId++ <<  " fail: " <<  v  << "!=" << score << std::endl;
+        break;
+      }
     }
-    b = b.make_move(move);
-    turn = 1 - turn;
+    std::cout << "total duration: " << totalDuration.count() << "s" << std::endl;
+  } else if (args.cmd == "search") {
+    BitBoard b(args.startingMoves);
+    Searcher searcher(solver, args.depth);
+    searcher.search(b);
+  } else if (args.cmd == "play") {
+    BitBoard b;
+    int move;
+    std::array<std::unique_ptr<Agent>, 2> agents = {
+      std::make_unique<HumanAgent>(),
+      std::make_unique<AI>(solver)
+    };
+    GameRunner().play(agents);
+  } else {
+    printHelpAndExit();
   }
 	return 0;
 }
