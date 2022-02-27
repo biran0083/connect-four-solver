@@ -12,8 +12,8 @@
 #include<iostream>
 constexpr int HEIGHT = 6;
 constexpr int WIDTH = 7;
-constexpr int MAX_SCORE = (WIDTH*HEIGHT+1)/2 - 3;
-constexpr int MIN_SCORE = -(WIDTH*HEIGHT)/2 + 3;
+constexpr int MAX_SCORE = (WIDTH * HEIGHT + 1) / 2 - 3;
+constexpr int MIN_SCORE = -(WIDTH * HEIGHT) / 2 + 3;
 
 int64_t mirrow(int64_t key) {
   int64_t res = 0;
@@ -112,8 +112,7 @@ private:
 #define DOWN_RIGHT(pos, i) DOWN(RIGHT(pos, i), i)
 #define UP_RIGHT(pos, i) UP(RIGHT(pos, i), i)
 #define DOWN_LEFT(pos, i) DOWN(LEFT(pos, i), i)
-int64_t get_winning_moves(int64_t position, int64_t mask) {
-  /*
+int64_t get_winning_moves(int64_t pos, int64_t mask) {
   int64_t res = UP(pos, 1) & UP(pos, 2) & UP(pos, 3);
   res |= LEFT(pos, 1) & LEFT(pos, 2) & LEFT(pos, 3);
   res |= RIGHT(pos, 1) & LEFT(pos, 1) & LEFT(pos, 2);
@@ -128,42 +127,10 @@ int64_t get_winning_moves(int64_t position, int64_t mask) {
   res |= DOWN_LEFT(pos, 2) & DOWN_LEFT(pos, 1) & UP_RIGHT(pos, 1);
   res |= DOWN_LEFT(pos, 3) & DOWN_LEFT(pos, 2) & DOWN_LEFT(pos, 1);
   return res & (FULL ^ mask);
-  */
-  uint64_t r = (position << 1) & (position << 2) & (position << 3);
-
-  //horizontal
-  uint64_t p = (position << (HEIGHT+1)) & (position << 2*(HEIGHT+1));
-  r |= p & (position << 3*(HEIGHT+1));
-  r |= p & (position >> (HEIGHT+1));
-  p = (position >> (HEIGHT+1)) & (position >> 2*(HEIGHT+1));
-  r |= p & (position << (HEIGHT+1));
-  r |= p & (position >> 3*(HEIGHT+1));
-
-  //diagonal 1
-  p = (position << HEIGHT) & (position << 2*HEIGHT);
-  r |= p & (position << 3*HEIGHT);
-  r |= p & (position >> HEIGHT);
-  p = (position >> HEIGHT) & (position >> 2*HEIGHT);
-  r |= p & (position << HEIGHT);
-  r |= p & (position >> 3*HEIGHT);
-
-  //diagonal 2
-  p = (position << (HEIGHT+2)) & (position << 2*(HEIGHT+2));
-  r |= p & (position << 3*(HEIGHT+2));
-  r |= p & (position >> (HEIGHT+2));
-  p = (position >> (HEIGHT+2)) & (position >> 2*(HEIGHT+2));
-  r |= p & (position << (HEIGHT+2));
-  r |= p & (position >> 3*(HEIGHT+2));
-
-  return r & (FULL ^ mask);
 }
 
 constexpr int64_t get_column_mask(int col) {
   return ((1LL << HEIGHT) - 1) << col * (HEIGHT + 1);
-}
-
-constexpr int64_t get_top_mask(int col) {
-  return 1LL << (HEIGHT - 1 + col * (HEIGHT + 1));
 }
 
 constexpr int64_t get_bottom_mask(int col) {
@@ -205,8 +172,9 @@ public:
     return pos + mask;
   }
 
-  BitBoard make_move(int col) {
-    return BitBoard(pos ^ mask, mask | (mask + (get_bottom_mask(col))), moves + 1);
+  BitBoard make_move(int64_t move) {
+    assert(move);
+    return BitBoard(pos ^ mask, mask | move, moves + 1);
   }
 
   int64_t get_legal_moves() {
@@ -231,25 +199,26 @@ public:
     return get_winning_moves(pos, mask) & get_legal_moves();
   }
 
-  bool is_winning_move(int col) {
-    return get_column_mask(col) & get_winning_moves(pos, mask) & get_legal_moves();
+  bool is_winning_move(int64_t move) {
+    return move & get_winning_moves(pos, mask);
   }
 
-  void sort_move_cols(int* res, int n) {
+  void sort_moves(int64_t* res, int n) {
     std::array<int, WIDTH> score;
-    int64_t moves = mask + BOTTOM;
     for (int i = 0; i < n; i++) {
-      score[res[i]] = count_winning_moves(pos | (moves & get_column_mask(res[i])), mask);
+      score[i] = count_winning_moves(pos | res[i], mask);
     }
     for (int i = 1; i < n; i++) {
-      int t = res[i];
-      int s = score[t];
+      int64_t t = res[i];
+      int s = score[i];
       int j = i;
-      while (j && score[res[j-1]] < s) {
+      while (j && score[j-1] < s) {
         res[j] = res[j - 1];
+        score[j] = score[j - 1];
         j--;
       }
       res[j] = t;
+      score[j] = s;
     }
   }
 
@@ -316,18 +285,18 @@ public:
     beta = std::min(hi, beta);
     int score = MIN_SCORE;
     int alpha0 = alpha;
-    std::array<int, WIDTH> col;
+    std::array<int64_t, WIDTH> cand;
     int n = 0;
     for (int i = 0; i < WIDTH; i++) {
       int idx = WIDTH /  2 + (1 - 2 * (i % 2)) * (i + 1) / 2;
-      if (get_column_mask(idx) & moves) {
-        col[n++] = idx;
+      int64_t move = get_column_mask(idx) & moves;
+      if (move) {
+        cand[n++] = move;
       }
     }
-    a.sort_move_cols(col.data(), n);
+    a.sort_moves(cand.data(), n);
     for (int i = 0; i < n; i++) {
-      int move = col[i];
-      BitBoard b = a.make_move(move);
+      BitBoard b = a.make_move(cand[i]);
       score =std::max(score, -negamax(b, -beta, -alpha));
       if (score >= beta) {
         break;
@@ -389,10 +358,10 @@ private:
       return;
     }
     auto moves = b.get_non_losing_moves();
-    for (int i = 0; i < WIDTH; i++) {
-      if (moves & get_column_mask(i)) {
-        dfs(b.make_move(i));
-      }
+    while (moves) {
+      int64_t move = moves & -moves;
+      dfs(b.make_move(move));
+      moves -= move;
     }
   }
 
@@ -409,21 +378,32 @@ private:
   const int depth;
 };
 
+int64_t column_to_move(BitBoard& b, int col) {
+  return get_column_mask(col) & (b.mask + BOTTOM);
+}
 
+int move_to_column(int64_t move) {
+  int n = 0;
+  while (move) {
+    move >>= HEIGHT + 1;
+    n++;
+  }
+  return n - 1;
+}
 class Agent {
 public:
   virtual ~Agent() = default;
-  virtual int get_move(BitBoard& b) = 0;
+  virtual int64_t get_move(BitBoard& b) = 0;
   virtual std::string getName() = 0;
 };
 
 class Human: public Agent {
 public:
-  virtual int get_move(BitBoard& b) override {
+  virtual int64_t get_move(BitBoard& b) override {
     std::cout << getName() << "> ";
-    int move;
-    std::cin >> move;
-    return move - 1;
+    int col;
+    std::cin >> col;
+    return column_to_move(b, col - 1);
   }
 
   virtual std::string getName() override {
@@ -435,43 +415,32 @@ class AI :public Agent{
 public:
   AI(Solver& solver, const std::string& name="AI"): Agent(), solver(solver), name(name) {}
 
-  virtual int get_move(BitBoard& b) override {
+  virtual int64_t get_move(BitBoard& b) override {
     int64_t winning_moves = get_winning_moves(b.pos, b.mask) & b.get_legal_moves();
-    int res;
+    int64_t res;
     if (winning_moves) {
-      for (int i = 0; i < WIDTH; i++) {
-        if (get_column_mask(i) & winning_moves) {
-          res = i;
-          break;
-        }
-      }
+      res = winning_moves & -winning_moves;
     } else {
       auto moveScores = get_move_scores(b);
       if (moveScores.size() == 0) {
         std::cout << std::endl;
         // return first legal move when losing
         auto moves = b.get_legal_moves();
-        for (int i = 0; i < WIDTH; i++) {
-          if (get_column_mask(i) & moves) {
-            res = i;
-            break;
-          }
-        }
+        res = moves & -moves;
       } else {
         std::cout << getName() << "> " << std::flush;
-        res = -1;
         int max = MIN_SCORE - 1;
         for (auto [move, score] : moveScores) {
           if(score > max) {
             max = score;
             res = move;
           }
-          std::cout << move + 1 << ":" << score << " ";
+          std::cout << move_to_column(move) + 1 << ":" << score << " ";
         }
         std::cout << std::endl;
       }
     }
-    std::cout << getName() << "> " << res << std::endl;
+    std::cout << getName() << "> " << move_to_column(res) + 1 << std::endl;
     return res;
   }
 
@@ -480,13 +449,13 @@ public:
   }
 
 private:
-  std::vector<std::pair<int,int>> get_move_scores(BitBoard& b) {
+  std::vector<std::pair<int64_t,int>> get_move_scores(BitBoard& b) {
     int64_t moves = b.get_non_losing_moves();
-    std::vector<std::pair<int,int>> res;
-    for (int i = 0; i < WIDTH; i++) {
-      if (moves & get_column_mask(i)) {
-        res.emplace_back(i, -solver.solve(b.make_move(i)));
-      }
+    std::vector<std::pair<int64_t,int>> res;
+    while (moves) {
+      int64_t move = moves & -moves;
+      res.emplace_back(move, -solver.solve(b.make_move(move)));
+      moves -= move;
     }
     return res;
   }
@@ -575,7 +544,7 @@ public:
       clearScreen();
       b.print();
       std::cout << b.get_next_move_type() << " playing" << std::endl;
-      int move = agents[turn]->get_move(b);
+      int64_t move = agents[turn]->get_move(b);
       if (b.is_winning_move(move)) {
         clearScreen();
         b.make_move(move).print();
